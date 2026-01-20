@@ -1,38 +1,55 @@
-import streamlit as st
 import os
-import vertexai
-from langchain_google_vertexai import VertexAI
-from langchain_core.prompts import PromptTemplate
-from langchain.chains import LLMChain
+import streamlit as st
 
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"]="./key.json" # place the key JSON file in the same folder as your notebook
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 
-PROJECT_ID = "cmu-class" # use your project id
-REGION = "us-central1"  #
-
-vertexai.init(project=PROJECT_ID, location=REGION)
-
-llm = VertexAI(
-    model_name="gemini-2.5-pro",
-    max_output_tokens=256,
-    temperature=0.1,
-    top_p=0.8,
-    top_k=40,
-    verbose=True,
-)
-
+st.set_page_config(page_title="City Recommender", layout="centered")
 st.title("City Recommender with Duration and Budget")
 
+os.environ["GOOGLE_API_KEY"] = "AIzaSyDubs-CxPBUKKhkwYJU2NgQA6Exxuaw1Qk" # Update this with your Google AI Studio API Key
 
-my_budget = st.sidebar.selectbox("Your Budget is:", ("Less than $1000", "Between $1000 and $2000", "Between $2000 and $5000", "More than $5000"))
-my_duration = st.sidebar.number_input("Enter the Number of Weeks for Your Vacation", step=1)
+# --- API Key check (Google AI Studio) ---
+api_key = os.getenv("GOOGLE_API_KEY")
+if not api_key:
+    st.error("Missing GOOGLE_API_KEY. Set it in your environment, restart the terminal, then rerun Streamlit.")
+    st.stop()
+
+# --- Model (Google Generative AI / AI Studio) ---
+model = ChatGoogleGenerativeAI(
+    model="gemini-3-flash-preview",
+    temperature=0.1,
+    max_output_tokens=256
+)
+
+# --- UI ---
+my_budget = st.sidebar.selectbox(
+    "Your Budget is:",
+    ("Less than $1000", "Between $1000 and $2000", "Between $2000 and $5000", "More than $5000"),
+)
+
+my_duration = st.sidebar.number_input(
+    "Enter the Number of Weeks for Your Vacation",
+    min_value=1,
+    step=1,
+)
+
 col1, col2, col3 = st.sidebar.columns(3)
 generate_result = col2.button("Tell Me!")
+
+# --- Prompt + Chain (LCEL) ---
+prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are a helpful travel assistant."),
+    ("user",
+     "I want to spend a nice vacation for {duration} week(s). "
+     "My budget for the entire trip is {budget}. "
+     "Suggest a list of 10 cities to visit that would fit this budget. "
+     "Return ONLY the city names as a comma-separated list. No explanations.")
+])
+
+chain = prompt | model | StrOutputParser()
+
 if generate_result:
-    prompt_template_name = PromptTemplate(
-        input_variables=['budget','duration'],
-        template="I want to spend a nice vacation for {duration} week(s)https://www.twitch.tv/viper. My budget for the entire trip is {budget}. Suggest a list of 10 cities to visit that would fit this budget. Display the list of cities as a comma separated list. Only display the cities without any explanation or description."
-    )
-    chain = LLMChain(llm=llm, prompt=prompt_template_name)
-    result = chain.run(budget=my_budget,duration=my_duration)
+    result = chain.invoke({"budget": my_budget, "duration": my_duration})
     st.write(result)

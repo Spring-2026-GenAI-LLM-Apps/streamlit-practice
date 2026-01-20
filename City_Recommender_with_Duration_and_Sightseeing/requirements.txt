@@ -1,5 +1,6 @@
-google-cloud-aiplatform 
-langchain 
-langchain-core 
-langchain-google-vertexai 
-streamlit
+streamlit 
+langchain
+langchain-core
+langchain-google-genai
+google-genai
+pillow

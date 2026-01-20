@@ -1,73 +1,148 @@
-import streamlit as st
 import os
-import vertexai
-from langchain_google_vertexai import VertexAI
-from langchain_core.prompts import PromptTemplate
-from langchain.chains import LLMChain, SequentialChain
-from vertexai.preview.vision_models import ImageGenerationModel
+import streamlit as st
+from PIL import Image
 
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"]="./key.json" # place the key JSON file in the same folder as your notebook
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 
-PROJECT_ID = "cmu-class" # use your project id
-REGION = "us-central1"  #
+from google import genai
 
+st.set_page_config(page_title="City Recommender", layout="centered")
+st.title("City Recommender with Sightseeing List")
 
+os.environ["GOOGLE_API_KEY"] = "AIzaSyDubs-CxPBUKKhkwYJU2NgQA6Exxuaw1Qk" # Update this with your Google AI Studio API Key
 
-vertexai.init(project=PROJECT_ID, location=REGION)
+# ---- API Key (Google AI Studio) ----
+api_key = os.getenv("GOOGLE_API_KEY")
+if not api_key:
+    st.error("Missing GOOGLE_API_KEY. Set it in your environment, restart your terminal, then rerun Streamlit.")
+    st.stop()
 
-llm = VertexAI(
-    model_name="gemini-2.5-pro",
-    max_output_tokens=256,
+# ---- LLM (Google Generative AI / AI Studio) ----
+llm = ChatGoogleGenerativeAI(
+    model="gemini-3-flash-preview",
     temperature=0.5,
-    top_p=0.8,
-    top_k=40,
-    verbose=True,
+    max_output_tokens=256,
 )
 
-st.title("City Recommender with Sightseeing List")
-model = ImageGenerationModel.from_pretrained("imagen-3.0-fast-generate-001")
+# ---- Image client (Google GenAI SDK) ----
+genai_client = genai.Client(api_key=api_key)
 
+# ---- UI ----
+my_budget = st.sidebar.selectbox(
+    "Your Budget is:",
+    ("Less than $1000", "Between $1000 and $2000", "Between $2000 and $5000", "More than $5000"),
+)
+my_duration = st.sidebar.number_input(
+    "Enter the Number of Weeks for Your Vacation",
+    min_value=1,
+    step=1,
+)
 
-
-my_budget = st.sidebar.selectbox("Your Budget is:", ("Less than $1000", "Between $1000 and $2000", "Between $2000 and $5000", "More than $5000"))
-my_duration = st.sidebar.number_input("Enter the Number of Weeks for Your Vacation", step=1)
 col1, col2, col3 = st.sidebar.columns(3)
 generate_result = col2.button("Tell Me!")
+
+# ---- Prompt 1: pick exactly one city ----
+city_prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are a helpful travel assistant."),
+    ("user",
+     "I want to spend a nice vacation for {duration} week(s). "
+     "My budget for the entire trip is {budget}. "
+     "Suggest EXACTLY ONE city to visit that would fit this budget. "
+     "Return ONLY the city name, no punctuation, no explanation.")
+])
+city_chain = city_prompt | llm | StrOutputParser()
+
+# ---- Prompt 2: 2 key sights in that city ----
+sights_prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are a helpful travel assistant."),
+    ("user",
+     "Print the most important TWO sightseeing spots in {city_name}. "
+     "My budget for visiting this city is {budget}. "
+     "Return ONLY a comma-separated list of the two places. "
+     "No numbering, no special characters, no extra text.")
+])
+sights_chain = sights_prompt | llm | StrOutputParser()
+
+
+def safe_split_places(text: str) -> list[str]:
+    # Robust splitting: handles extra spaces and accidental double commas
+    parts = [p.strip() for p in (text or "").split(",")]
+    parts = [p for p in parts if p]
+    return parts[:2]  # enforce exactly 2
+
+
+def generate_place_image(place: str, city: str):
+    """
+    Uses Gemini API image generation (Imagen) via google-genai.
+    Returns a PIL Image or None.
+    """
+    prompt = f"High-quality travel photograph of {place} in {city}, natural lighting, realistic, no text, no watermark."
+
+    # Model names can vary by account/region. If this model name fails for you,
+    # I’ll swap it to the correct one for your enabled models.
+    resp = genai_client.models.generate_images(
+        model="imagen-4.0-generate-001",
+        prompt=prompt,
+        config={"number_of_images": 1},
+    )
+
+    if not getattr(resp, "generated_images", None):
+        return None
+
+    img_bytes = resp.generated_images[0].image.image_bytes
+    return Image.open(io.BytesIO(img_bytes))
+
+
 if generate_result:
-    prompt_template_budget_duration = PromptTemplate(
-        input_variables=['budget','duration'],
-        template="I want to spend a nice vacation for {duration} week(s). My budget for the entire trip is {budget}. Suggest exactly one city to visit that would fit this budget. Only display the city without any explanation or description."
-    )
-    city_chain = LLMChain(llm=llm, prompt=prompt_template_budget_duration, output_key="city_name")
-    prompt_template_sightseeing_list = PromptTemplate(
-        input_variables=['city_name', 'budget'],
-        template="Print the most important two sightseeings in {city_name}. My budget for visiting this city is {budget}. Return the output as a comma-separated string. Don't include any special characters to the output."
-    )
-    sightseeing_chain = LLMChain(llm=llm, prompt=prompt_template_sightseeing_list, output_key="sightseeing_list")
-    chain = SequentialChain(
-        chains=[city_chain, sightseeing_chain],
-        input_variables=['budget','duration'],
-        output_variables=['city_name', 'sightseeing_list']
-    )
-    result = chain({'budget': my_budget, 'duration': my_duration})
-    #st.write(result)
-    st.header(result['city_name'].strip())
-    places_list = result['sightseeing_list'].strip().split(",")
+    with st.spinner("Picking a city..."):
+        city_name = city_chain.invoke({"budget": my_budget, "duration": my_duration}).strip()
+
+    if not city_name:
+        st.error("City generation returned empty output. Try again or switch to gemini-2.5-flash.")
+        st.stop()
+
+    st.header(city_name)
+
+    with st.spinner("Getting top sights..."):
+        sights_text = sights_chain.invoke({"city_name": city_name, "budget": my_budget}).strip()
+
+    places_list = safe_split_places(sights_text)
+
+    if len(places_list) < 2:
+        st.warning(f"Unexpected sightseeing output: {repr(sights_text)}")
+        st.stop()
+
     st.write("**Places to Visit:**")
+
     for place in places_list:
         st.write("-", place)
-        image_prompt = "Generate an image for " + place + " located in " + result['city_name'].strip()
-        images = model.generate_images(
-            prompt=image_prompt,
-            # Optional parameters
-            number_of_images=1,
-            language="en",
-            # You can't use a seed value and watermark at the same time.
-            # add_watermark=False,
-            # seed=100,
-        )
-        images[0].save(location="output.png", include_generation_parameters=False)
-        st.image("output.png")
-    os.remove("output.png")
 
+        # Generate image for each place
+        try:
+            with st.spinner(f"Generating an image for {place}..."):
+                # Use images only if your account has image generation enabled.
+                # If it errors, we show the text list without images.
+                import io
+                img = None
 
+                prompt = f"High-quality travel photograph of {place} in {city_name}, realistic, natural lighting, no text."
+                resp = genai_client.models.generate_images(
+                    model="imagen-4.0-generate-001",
+                    prompt=prompt,
+                    config={"number_of_images": 1},
+                )
+
+                if getattr(resp, "generated_images", None):
+                    img_bytes = resp.generated_images[0].image.image_bytes
+                    img = Image.open(io.BytesIO(img_bytes))
+
+                if img:
+                    st.image(img, caption=f"{place} — {city_name}", width='stretch')
+                else:
+                    st.info(f"No image returned for {place}.")
+        except Exception as e:
+            st.warning(f"Couldn't generate image for {place}. Showing text only.")
+            with st.expander("Image generation error"):
+                st.exception(e)
