@@ -110,10 +110,6 @@ if generate_result:
 
     places_list = safe_split_places(sights_text)
 
-    if len(places_list) < 2:
-        st.warning(f"Unexpected sightseeing output: {repr(sights_text)}")
-        st.stop()
-
     st.write("**Places to Visit:**")
 
     for place in places_list:
